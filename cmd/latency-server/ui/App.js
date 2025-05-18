@@ -17,6 +17,15 @@ export default function App() {
   const dataPoints = useRef([]);
   // Page suffix from environment (injected via index.html)
   const pageSuffix = window.PAGE_SUFFIX ? ' ' + window.PAGE_SUFFIX : '';
+  // Base path for API and WS endpoints, based on where this UI is served
+  const basePath = (() => {
+    let p = window.location.pathname;
+    // ensure a trailing slash
+    if (!p.endsWith('/')) {
+      p = p.substring(0, p.lastIndexOf('/') + 1);
+    }
+    return p;
+  })();
 
   // Initialize chart on mount
   useEffect(() => {
@@ -72,15 +81,15 @@ export default function App() {
   useEffect(() => {
     let timer;
     let ws;
+    let reconnectTimer;
     let canceled = false;
-    const baseUrl = window.DEFAULT_URL || '';
     // if not running, skip ping loop
     if (!running) return;
 
     if (method === 'REST') {
       const callREST = () => {
         const start = Date.now();
-        fetch(`${baseUrl}/api/latency`)
+        fetch(`${basePath}api/latency`)
           .then(res => res.json())
           .then(() => {
             const rtt = Date.now() - start;
@@ -96,7 +105,7 @@ export default function App() {
       } else {
         timer = setInterval(() => {
           const start = Date.now();
-          fetch(`${baseUrl}/api/latency`)
+          fetch(`${basePath}api/latency`)
             .then(res => res.json())
             .then(() => recordLatency(Date.now() - start))
             .catch(() => { });
@@ -104,26 +113,35 @@ export default function App() {
       }
     } else if (method === 'WS') {
       const protocol = location.protocol === 'https:' ? 'wss://' : 'ws://';
-      const wsUrl = baseUrl
-        ? baseUrl.replace(/^http/, protocol) + '/ws/latency'
-        : protocol + location.host + '/ws/latency';
-      ws = new WebSocket(wsUrl);
-      ws.onopen = () => {
-        if (freq === 0) ws.send(JSON.stringify({ t: Date.now() }));
+      const wsUrl = `${protocol}//${location.host}${basePath}ws/latency`;
+      // Function to establish and re-establish WebSocket connection
+      const connectWS = () => {
+        if (canceled) return;
+        ws = new WebSocket(wsUrl);
+        ws.onopen = () => {
+          if (freq === 0) ws.send(JSON.stringify({ t: Date.now() }));
+        };
+        ws.onmessage = (event) => {
+          try {
+            const msg = JSON.parse(event.data);
+            const rtt = Date.now() - msg.t;
+            recordLatency(rtt);
+          } catch { }
+          if (freq === 0 && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ t: Date.now() }));
+          }
+        };
+        ws.onclose = () => {
+          if (!canceled) reconnectTimer = setTimeout(connectWS, 1000);
+        };
+        ws.onerror = () => {
+          ws.close();
+        };
       };
-      ws.onmessage = (event) => {
-        try {
-          const msg = JSON.parse(event.data);
-          const rtt = Date.now() - msg.t;
-          recordLatency(rtt);
-        } catch { }
-        if (freq === 0 && ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ t: Date.now() }));
-        }
-      };
+      connectWS();
       if (freq > 0) {
         timer = setInterval(() => {
-          if (ws.readyState === WebSocket.OPEN) {
+          if (ws && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ t: Date.now() }));
           }
         }, freq);
@@ -133,6 +151,7 @@ export default function App() {
     return () => {
       canceled = true;
       if (timer) clearInterval(timer);
+      if (reconnectTimer) clearTimeout(reconnectTimer);
       if (ws) ws.close();
     };
   }, [method, freq, running]);
@@ -150,7 +169,7 @@ export default function App() {
 
   return html`
     <div class="container mx-auto p-4">
-      <h1 class="text-2xl font-bold mb-4">Latency Chart${pageSuffix}</h1>
+      <h1 class="text-2xl font-bold mb-4">Latency Server ${pageSuffix}</h1>
       <div class="flex items-center space-x-4 mb-4">
         <div>
           <label class="mr-2 font-medium">Method:</label>
@@ -189,9 +208,9 @@ export default function App() {
             <option value=${900000}>15m</option>
           </select>
         </div>
-        <div>
-          <label class="mr-2 font-medium">Control:</label>
-          <button class="btn" onClick=${() => setRunning(r => !r)}>
+        <div class="flex flex-col">
+          <label class="font-medium">Control:</label>
+          <button class="btn block w-full" onClick=${() => setRunning(r => !r)}>
             ${running ? html`<span class="mdi mdi-pause"></span>` : html`<span class="mdi mdi-play"></span>`}
           </button>
         </div>
