@@ -77,84 +77,32 @@ export default function App() {
     chart.update();
   };
 
-  // Handle ping loop: REST or WebSocket, with optional ASAP mode (freq=0)
+  // Use a Web Worker to run ping loops in a background thread to avoid timer throttling
+  const workerRef = useRef(null);
+
+  // Spawn the worker on mount
   useEffect(() => {
-    let timer;
-    let ws;
-    let reconnectTimer;
-    let canceled = false;
-    // if not running, skip ping loop
-    if (!running) return;
-
-    if (method === 'REST') {
-      const callREST = () => {
-        const start = Date.now();
-        fetch(`${basePath}api/latency`)
-          .then(res => res.json())
-          .then(() => {
-            const rtt = Date.now() - start;
-            recordLatency(rtt);
-          })
-          .catch(() => { })
-          .finally(() => {
-            if (!canceled && freq === 0) callREST();
-          });
-      };
-      if (freq === 0) {
-        callREST();
-      } else {
-        timer = setInterval(() => {
-          const start = Date.now();
-          fetch(`${basePath}api/latency`)
-            .then(res => res.json())
-            .then(() => recordLatency(Date.now() - start))
-            .catch(() => { });
-        }, freq);
+    const w = new Worker(`${basePath}pingWorker.js`, { type: 'module' });
+    workerRef.current = w;
+    w.onmessage = (e) => {
+      const msg = e.data;
+      if (msg && msg.type === 'latency') {
+        recordLatency(msg.rtt);
       }
-    } else if (method === 'WS') {
-      const protocol = location.protocol === 'https:' ? 'wss://' : 'ws://';
-      const wsUrl = `${protocol}//${location.host}${basePath}ws/latency`;
-      // Function to establish and re-establish WebSocket connection
-      const connectWS = () => {
-        if (canceled) return;
-        ws = new WebSocket(wsUrl);
-        ws.onopen = () => {
-          if (freq === 0) ws.send(JSON.stringify({ t: Date.now() }));
-        };
-        ws.onmessage = (event) => {
-          try {
-            const msg = JSON.parse(event.data);
-            const rtt = Date.now() - msg.t;
-            recordLatency(rtt);
-          } catch { }
-          if (freq === 0 && ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ t: Date.now() }));
-          }
-        };
-        ws.onclose = () => {
-          if (!canceled) reconnectTimer = setTimeout(connectWS, 1000);
-        };
-        ws.onerror = () => {
-          ws.close();
-        };
-      };
-      connectWS();
-      if (freq > 0) {
-        timer = setInterval(() => {
-          if (ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ t: Date.now() }));
-          }
-        }, freq);
-      }
-    }
-
-    return () => {
-      canceled = true;
-      if (timer) clearInterval(timer);
-      if (reconnectTimer) clearTimeout(reconnectTimer);
-      if (ws) ws.close();
     };
-  }, [method, freq, running]);
+    // send initial configuration
+    w.postMessage({ type: 'config', method, freq, running, basePath });
+    return () => {
+      w.terminate();
+    };
+  }, [basePath]);
+
+  // Update worker whenever settings change
+  useEffect(() => {
+    if (workerRef.current) {
+      workerRef.current.postMessage({ type: 'config', method, freq, running, basePath });
+    }
+  }, [method, freq, running, basePath]);
 
   // Re-prune and update chart when range changes
   useEffect(() => {
@@ -189,7 +137,6 @@ export default function App() {
             value=${freq}
             onChange=${e => setFreq(Number(e.target.value))}
           >
-            <option value=${0}>As fast as possible</option>
             <option value=${1000}>1s</option>
             <option value=${2000}>2s</option>
             <option value=${5000}>5s</option>
