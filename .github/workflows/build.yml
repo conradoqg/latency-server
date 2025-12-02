@@ -18,7 +18,7 @@ jobs:
           go-version: "1.21"
 
       - name: Build latency-server
-        run: make build-latency-server
+        run: make build
 
       - name: Upload latency-server binary
         if: github.event_name == 'push' && github.ref == 'refs/heads/master'
