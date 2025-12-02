@@ -1,0 +1,4 @@
+# Placeholder configuration file for latency-server
+# This application is configured via Environment Variables:
+# - LOG_LEVEL (debug, info, warn, error)
+# - PAGE_SUFFIX (string to inject in index.html)
